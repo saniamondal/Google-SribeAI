@@ -79,7 +79,7 @@ export default function App() {
     setHistLoading(true);
     try {
       const uid = user.uid || "";
-      const r = await fetch(`http://localhost:3000/meetings?uid=${encodeURIComponent(uid)}`);
+      const r = await fetch(`https://google-sribeai.onrender.com/meetings?uid=${encodeURIComponent(uid)}`);
       const d = await r.json();
       setMeetings(Array.isArray(d) ? d : []);
     } catch { setMeetings([]); }
@@ -94,7 +94,7 @@ export default function App() {
     setActiveTab("overview");
     setEditingTitle(false);
     try {
-      const r = await fetch(`http://localhost:3000/meeting?key=${encodeURIComponent(m.key)}`);
+      const r = await fetch(`https://google-sribeai.onrender.com/meeting?key=${encodeURIComponent(m.key)}`);
       const d = await r.json();
       setCurrentMeeting(d);
       setMeetingDate(m.date);
@@ -108,7 +108,7 @@ export default function App() {
     if (!titleDraft.trim() || !selectedKey || renaming) return;
     setRenaming(true);
     try {
-      await fetch("http://localhost:3000/meeting", {
+      await fetch("https://google-sribeai.onrender.com/meeting", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ key: selectedKey, title: titleDraft.trim() }),
@@ -158,7 +158,7 @@ export default function App() {
     if (esRef.current) esRef.current.close();
 
     const uid = user?.uid || "";
-    const es = new EventSource(`http://localhost:3000/start?meetLink=${encodeURIComponent(link.trim())}&uid=${encodeURIComponent(uid)}`);
+    const es = new EventSource(`https://google-sribeai.onrender.com/start?meetLink=${encodeURIComponent(link.trim())}&uid=${encodeURIComponent(uid)}`);
     esRef.current = es;
 
     es.addEventListener("status", (e) => {
