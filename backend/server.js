@@ -62,7 +62,21 @@ const TERMINAL_OK = new Set([
 ]);
 const TERMINAL_FAIL = new Set([
   "fatal", "error", "recording_permission_denied", "bot_kicked", "rejected",
+  "failed", "timeout", "invalid_meeting_url", "meeting_not_found",
 ]);
+
+// Safely extract the latest status code from Recall bot data
+function extractRecallStatus(data) {
+  // Prefer status_changes array (most detailed)
+  const changes = data?.status_changes || [];
+  if (changes.length > 0) {
+    const latest = changes[changes.length - 1];
+    return latest?.code || latest?.status || "unknown";
+  }
+  // Fall back to top-level status field
+  if (data?.status) return data.status;
+  return "unknown";
+}
 
 // ── RECALL helpers ───────────────────────────────────────
 async function createBot(meetLink) {
@@ -126,30 +140,26 @@ async function transcribe(audioUrl) {
   }
 }
 
-// ── LLM via HF Inference Router ─────────────────────────
-const HF_PROVIDER = process.env.HF_PROVIDER || "openai";
-
+// ── LLM via Groq — LLaMA 3.3 70B ───────────────────────
 async function summarize(text) {
   const truncated = text.length > 12000
     ? text.slice(0, 12000) + "\n\n[transcript truncated for length]"
     : text;
 
-  console.log(`Sending to openai/gpt-oss-20b via HF (provider: ${HF_PROVIDER})...`);
+  console.log("Sending to Groq LLaMA 3.3 70B for summarization...");
 
-  let response;
+  let completion;
   try {
-    response = await axios.post(
-      "https://router.huggingface.co/v1/chat/completions",
-      {
-        model: `openai/gpt-oss-20b:${HF_PROVIDER}`,
-        messages: [
-          {
-            role: "system",
-            content: "You are an expert meeting analyst. You return only valid JSON with no markdown, no code fences, no extra text.",
-          },
-          {
-            role: "user",
-            content: `Analyze this meeting transcript and return ONLY a raw JSON object (no markdown, no code blocks) with this exact structure:
+    completion = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        {
+          role: "system",
+          content: "You are an expert meeting analyst. You return only valid JSON with no markdown, no code fences, no extra text.",
+        },
+        {
+          role: "user",
+          content: `Analyze this meeting transcript and return ONLY a raw JSON object (no markdown, no code blocks) with this exact structure:
 
 {
   "title": "Short descriptive meeting title (5-7 words)",
@@ -171,27 +181,19 @@ Rules:
 
 Transcript:
 ${truncated}`,
-          },
-        ],
-        max_tokens: 1024,
-        temperature: 0.2,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.HF_API_KEY}`,
-          "Content-Type": "application/json",
         },
-        timeout: 180000,
-      }
-    );
+      ],
+      max_tokens: 1024,
+      temperature: 0.2,
+    });
   } catch (err) {
-    const detail = err.response?.data?.error || err.response?.data || err.message;
-    throw new Error(`HF API error: ${JSON.stringify(detail)}`);
+    const detail = err.error?.message || err.message;
+    throw new Error(`Groq API error: ${detail}`);
   }
 
-  const content = response.data?.choices?.[0]?.message?.content;
+  const content = completion?.choices?.[0]?.message?.content;
   if (!content) {
-    throw new Error("Empty response from HF: " + JSON.stringify(response.data));
+    throw new Error("Empty response from Groq LLaMA 3.3 70B");
   }
 
   // Strip markdown code fences that some models add despite the instruction
@@ -303,9 +305,7 @@ app.get("/start", async (req, res) => {
 
     if (i === 0) console.log("=== BOT DATA (first poll) ===\n", JSON.stringify(data, null, 2));
 
-    const changes = data?.status_changes || [];
-    const latest = changes.length > 0 ? changes[changes.length - 1] : null;
-    const recallStatus = latest?.code || latest?.status || "unknown";
+    const recallStatus = extractRecallStatus(data);
 
     if (recallStatus !== lastStatus) {
       lastStatus = recallStatus;
@@ -314,6 +314,14 @@ app.get("/start", async (req, res) => {
 
     const { step, msg } = mapStatus(recallStatus);
     send("status", { step, message: msg });
+
+    // Also check top-level fatal/error flags Recall sometimes puts outside status_changes
+    if (data?.error || data?.fatal) {
+      const errMsg = data.error?.message || data.fatal?.message || JSON.stringify(data.error || data.fatal);
+      send("error", { message: `Bot encountered a fatal error: ${errMsg}` });
+      activeBots.delete(meetLink);
+      return res.end();
+    }
 
     if (recallStatus === "in_waiting_room") {
       waitingRoomCount++;
