@@ -141,6 +141,15 @@ async function transcribe(audioUrl) {
 }
 
 // ── LLM via Groq — LLaMA 3.3 70B ───────────────────────
+
+// Extract the outermost JSON object from a string that may have preamble/suffix text
+function extractJSON(raw) {
+  const start = raw.indexOf("{");
+  const end   = raw.lastIndexOf("}");
+  if (start === -1 || end === -1 || end < start) return null;
+  return raw.slice(start, end + 1);
+}
+
 async function summarize(text) {
   const truncated = text.length > 12000
     ? text.slice(0, 12000) + "\n\n[transcript truncated for length]"
@@ -155,36 +164,46 @@ async function summarize(text) {
       messages: [
         {
           role: "system",
-          content: "You are an expert meeting analyst. You return only valid JSON with no markdown, no code fences, no extra text.",
+          content:
+            "You are an expert meeting analyst. " +
+            "Respond with ONLY a single valid JSON object — no markdown, no code fences, no explanation before or after.",
         },
         {
           role: "user",
-          content: `Analyze this meeting transcript and return ONLY a raw JSON object (no markdown, no code blocks) with this exact structure:
+          content:
+`Analyze the meeting transcript below and return ONLY a raw JSON object with this EXACT structure. Do NOT wrap it in markdown or add any text outside the JSON.
 
 {
   "title": "Short descriptive meeting title (5-7 words)",
   "participants": ["Name1", "Name2"],
   "overview": "2-3 sentence professional summary of the meeting.",
-  "bulletPoints": ["Key discussion point 1", "Key discussion point 2"],
-  "actionItems": [
-    { "task": "Task description", "owner": "Person or Team", "deadline": "deadline or null" }
+  "bulletPoints": [
+    "Key discussion point 1",
+    "Key discussion point 2",
+    "Key discussion point 3",
+    "Key discussion point 4"
   ],
-  "questions": ["Important question or insight raised"]
+  "actionItems": [
+    { "task": "Task description", "owner": "Person or Team", "deadline": "deadline or TBD" }
+  ],
+  "questions": [
+    "Important question or notable insight raised in the meeting"
+  ]
 }
 
 Rules:
-- participants: only real names spoken; empty array [] if none identifiable
-- bulletPoints: 4-8 most important points discussed
-- actionItems: only concrete follow-up tasks; empty array [] if none
-- questions: 3-5 key questions raised or notable insights; empty array [] if none
-- All values must be plain text, no markdown symbols
+- participants: only real names spoken; [] if none found
+- bulletPoints: 4-8 most important points; NEVER leave empty if transcript has content
+- actionItems: concrete follow-up tasks; [] only if genuinely none mentioned
+- questions: 3-5 key questions or insights; [] only if none
+- All string values must be plain text — no markdown, no bullet symbols
 
 Transcript:
 ${truncated}`,
         },
       ],
-      max_tokens: 1024,
-      temperature: 0.2,
+      max_tokens: 4096,
+      temperature: 0.1,
     });
   } catch (err) {
     const detail = err.error?.message || err.message;
@@ -196,30 +215,44 @@ ${truncated}`,
     throw new Error("Empty response from Groq LLaMA 3.3 70B");
   }
 
-  // Strip markdown code fences that some models add despite the instruction
-  let raw = content.trim();
-  raw = raw
+  console.log("Groq raw response (first 300 chars):", content.slice(0, 300));
+
+  // Strip markdown code fences
+  let raw = content.trim()
     .replace(/^```json\s*/i, "")
     .replace(/^```\s*/i, "")
     .replace(/```\s*$/i, "")
     .trim();
 
-  // Find the first '{' in case the model added any preamble text
-  const jsonStart = raw.indexOf("{");
-  if (jsonStart > 0) raw = raw.slice(jsonStart);
+  // Extract the outermost {...} block (handles preamble/suffix text)
+  const jsonStr = extractJSON(raw);
+  if (!jsonStr) {
+    console.error("⚠️  No JSON object found in response. Raw:", raw.substring(0, 500));
+    return {
+      title: "Meeting Recording",
+      participants: [],
+      overview: raw || "Summary could not be generated.",
+      bulletPoints: [],
+      actionItems: [],
+      questions: [],
+    };
+  }
 
-  // Parse into an object — if this fails we fall back to a safe structure
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(jsonStr);
     console.log("✅ JSON parsed successfully — keys:", Object.keys(parsed));
+    // Ensure all expected arrays exist
+    parsed.bulletPoints = parsed.bulletPoints || [];
+    parsed.actionItems  = parsed.actionItems  || [];
+    parsed.questions    = parsed.questions    || [];
+    parsed.participants = parsed.participants  || [];
     return parsed;
   } catch (parseErr) {
-    console.error("⚠️  JSON parse failed. Raw output (first 500 chars):", raw.substring(0, 500));
-    // Return a degraded but usable object so the meeting isn't completely empty
+    console.error("⚠️  JSON parse failed. Extracted string (first 500 chars):", jsonStr.substring(0, 500));
     return {
       title:        "Meeting Recording",
       participants: [],
-      overview:     raw,   // put the raw text in overview so nothing is lost
+      overview:     "The meeting was recorded but the summary could not be fully parsed.",
       bulletPoints: [],
       actionItems:  [],
       questions:    [],
