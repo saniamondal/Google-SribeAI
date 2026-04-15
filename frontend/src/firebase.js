@@ -2,12 +2,12 @@ import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCHhQixfrel0cdMrNnfx1_oSlU5jVPdqKU",
-  authDomain: "scribe-ai-b09ba.firebaseapp.com",
-  projectId: "scribe-ai-b09ba",
-  storageBucket: "scribe-ai-b09ba.firebasestorage.app",
-  messagingSenderId: "69883310353",
-  appId: "1:69883310353:web:2f2282213074e63e3e1cb0"
+  apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain:        import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId:         import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket:     import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId:             import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
 const app  = initializeApp(firebaseConfig);

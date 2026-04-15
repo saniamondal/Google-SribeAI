@@ -127,21 +127,21 @@ async function transcribe(audioUrl) {
 }
 
 // ── LLM via HF Inference Router ─────────────────────────
-const HF_PROVIDER = process.env.HF_PROVIDER || "nebius";
+const HF_PROVIDER = process.env.HF_PROVIDER || "openai";
 
 async function summarize(text) {
   const truncated = text.length > 12000
     ? text.slice(0, 12000) + "\n\n[transcript truncated for length]"
     : text;
 
-  console.log(`Sending to Llama via HF (provider: ${HF_PROVIDER})...`);
+  console.log(`Sending to openai/gpt-oss-20b via HF (provider: ${HF_PROVIDER})...`);
 
   let response;
   try {
     response = await axios.post(
       "https://router.huggingface.co/v1/chat/completions",
       {
-        model: `meta-llama/Llama-3.1-8B-Instruct:${HF_PROVIDER}`,
+        model: `openai/gpt-oss-20b:${HF_PROVIDER}`,
         messages: [
           {
             role: "system",
