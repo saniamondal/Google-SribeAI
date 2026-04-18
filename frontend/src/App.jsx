@@ -166,7 +166,12 @@ export default function App() {
     es.addEventListener("status", (e) => {
       const d = JSON.parse(e.data);
       setCurrentStep(d.step);
-      setStatusMessages(prev => [...prev, { text: d.message }]);
+      setStatusMessages(prev => {
+        // Only append if the message is different from the last one shown
+        const last = prev[prev.length - 1];
+        if (last && last.text === d.message) return prev;
+        return [...prev, { text: d.message }];
+      });
     });
 
     es.addEventListener("done", (e) => {
