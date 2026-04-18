@@ -1,4 +1,7 @@
 import { useState } from "react";
+import authIllustration from "./assets/auth-illustration.png";
+import ParticleBackground from "./ParticleBackground";
+import { useTheme } from "./ThemeContext";
 import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
@@ -6,7 +9,6 @@ import {
   signInWithPopup,
 } from "firebase/auth";
 import { auth, googleProvider } from "./firebase";
-import ParticleBackground from "./ParticleBackground";
 import "./AuthPage.css";
 
 /* ── Firebase friendly errors ─────────────────────────────────────── */
@@ -22,15 +24,14 @@ function friendlyError(code, raw) {
     case "auth/user-disabled":            return "This account has been disabled. Contact support.";
     case "auth/email-already-in-use":     return "An account already exists with this email. Sign in instead.";
     case "auth/weak-password":            return "Password must be at least 6 characters.";
-    case "auth/operation-not-allowed":    return "Email/Password sign-in is not enabled. Check Firebase Console → Authentication → Sign-in method.";
+    case "auth/operation-not-allowed":    return "Email/Password sign-in is not enabled.";
     case "auth/too-many-requests":        return "Too many failed attempts. Wait a moment and try again.";
     case "auth/network-request-failed":   return "Network error. Check your connection and try again.";
     case "auth/popup-blocked":            return "Popup blocked. Allow popups for this site and retry.";
     case "auth/popup-closed-by-user":
     case "auth/cancelled-popup-request":  return "";
-    case "auth/account-exists-with-different-credential": return "An account with this email exists via a different sign-in method. Try Google instead.";
-    case "auth/unauthorized-domain":      return "This domain is not authorised. Add 'localhost' in Firebase Console → Authentication → Authorised domains.";
-    case "auth/api-key-not-valid.-please-pass-a-valid-api-key.": return "Invalid Firebase API key. Copy the correct apiKey from Firebase Console → Project Settings → Your apps.";
+    case "auth/account-exists-with-different-credential": return "An account with this email exists via a different sign-in method.";
+    case "auth/unauthorized-domain":      return "This domain is not authorised. Add 'localhost' in Firebase Console.";
     default: {
       console.error("[Firebase Auth] Unhandled code:", code, "|", raw);
       return `Auth error [${code || "unknown"}] — please report this code.`;
@@ -39,9 +40,17 @@ function friendlyError(code, raw) {
 }
 
 /* ── Icons ────────────────────────────────────────────────────────── */
+function IconUser() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+      <circle cx="12" cy="7" r="4"/>
+    </svg>
+  );
+}
 function IconEmail() {
   return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
       <polyline points="22,6 12,13 2,6"/>
     </svg>
@@ -49,7 +58,7 @@ function IconEmail() {
 }
 function IconLock() {
   return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
       <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
     </svg>
@@ -82,16 +91,33 @@ function GoogleIcon() {
   );
 }
 
-/* ── Reusable sub-components ───────────────────────────────────────── */
+/* ── Banners ──────────────────────────────────────────────────────── */
 function ErrorBanner({ msg, id }) {
   if (!msg) return null;
   return <div className="auth-error" id={id} role="alert"><span>⚠️</span>{msg}</div>;
 }
 
+/* ── Brand Header (left panel) ───────────────────────────────────── */
+function BrandHeader({ panelTitle }) {
+  return (
+    <>
+      <div className="auth-brand-section">
+        <div className="auth-logo">🎯</div>
+        <div className="auth-brand-name">
+          Scribe <span className="auth-brand-accent">GoogleAI</span>
+        </div>
+        <p className="auth-tagline">Turn meetings into AI-powered notes instantly.</p>
+      </div>
+      <div className="auth-panel-title">{panelTitle}</div>
+    </>
+  );
+}
+
+/* ── Field components ─────────────────────────────────────────────── */
 function EmailField({ id, value, onChange, autoFocus }) {
   return (
     <div className="auth-field">
-      <label className="auth-label" htmlFor={id}>Email address</label>
+      <label className="auth-label" htmlFor={id}>Email Address</label>
       <div className="auth-input-wrap">
         <span className="auth-field-icon"><IconEmail /></span>
         <input
@@ -127,44 +153,16 @@ function PasswordField({ id, label, value, onChange, placeholder = "••••
   );
 }
 
-function GoogleBtn({ onClick, loading, disabled }) {
+/* ── Right panel: Illustration only ─────────────────────────────── */
+function IllustrationPanel() {
   return (
-    <button type="button" className="auth-btn-google" onClick={onClick}
-      disabled={disabled} id="google-btn">
-      {loading ? <span className="auth-spinner-dark" /> : <GoogleIcon />}
-      {loading ? "Connecting…" : "Continue with Google"}
-    </button>
-  );
-}
-
-/* ── Animated background elements ─────────────────────────────────── */
-function AuthBackground() {
-  return (
-    <>
-      <div className="auth-orb auth-orb-1" />
-      <div className="auth-orb auth-orb-2" />
-      <div className="auth-orb auth-orb-3" />
-      <div className="auth-lines" aria-hidden="true">
-        {Array.from({length: 9}).map((_, i) => (
-          <div key={i} className="auth-line" />
-        ))}
-      </div>
-    </>
-  );
-}
-
-/* ── Brand header ──────────────────────────────────────────────────── */
-function BrandHeader({ panelTitle, panelSub }) {
-  return (
-    <div className="auth-card-header">
-      <div className="auth-logo">🎯</div>
-      <div className="auth-brand">
-        Scribe <span className="auth-brand-accent">GoogleAI</span>
-      </div>
-      <p className="auth-tagline">Turn meetings into AI-powered notes instantly.</p>
-      <div className="auth-header-sep" />
-      <div className="auth-panel-title">{panelTitle}</div>
-      {panelSub && <div className="auth-panel-sub">{panelSub}</div>}
+    <div className="auth-illustration-panel">
+      {/* Illustration */}
+      <img
+        src={authIllustration}
+        alt="Woman taking AI-powered meeting notes"
+        className="auth-illustration-img"
+      />
     </div>
   );
 }
@@ -215,37 +213,42 @@ function SignInPanel({ onSwitch, onForgot }) {
   }
 
   return (
-    <>
-      <BrandHeader panelTitle="Sign in to your account" />
-      <form className="auth-card-body" onSubmit={handleSignIn} id="signin-form" noValidate>
-        <ErrorBanner msg={error} id="signin-error" />
-
-        <EmailField id="signin-email" value={email} onChange={e => setEmail(e.target.value)} autoFocus />
-
-        <PasswordField id="signin-password" label="Password" value={password}
-          onChange={e => setPassword(e.target.value)} autoComplete="current-password" />
-
-        <div className="auth-forgot">
-          <button type="button" className="auth-link" onClick={onForgot} id="forgot-link">
-            Forgot password?
-          </button>
+    <div className="auth-split-layout">
+      {/* LEFT — form */}
+      <div className="auth-form-side">
+        <div className="auth-form-inner">
+          <BrandHeader panelTitle="Sign in to your account" />
+          <ErrorBanner msg={error} id="signin-error" />
+          <form onSubmit={handleSignIn} id="signin-form" noValidate className="auth-form">
+            <EmailField id="signin-email" value={email} onChange={e => setEmail(e.target.value)} autoFocus />
+            <PasswordField id="signin-password" label="Password" value={password}
+              onChange={e => setPassword(e.target.value)} autoComplete="current-password" />
+            <div className="auth-forgot">
+              <button type="button" className="auth-link" onClick={onForgot} id="forgot-link">
+                Forgot password?
+              </button>
+            </div>
+            <button type="submit" className="auth-btn-primary" disabled={loading || gLoading} id="signin-btn">
+              {loading && <span className="auth-spinner" />}
+              {loading ? "Signing in…" : "Sign In"}
+            </button>
+            <div className="auth-divider"><span>or continue with</span></div>
+            <button type="button" className="auth-btn-google" onClick={handleGoogle}
+              disabled={loading || gLoading} id="google-btn">
+              {gLoading ? <span className="auth-spinner-dark" /> : <GoogleIcon />}
+              {gLoading ? "Connecting…" : "Continue with Google"}
+            </button>
+          </form>
+          <div className="auth-switch">
+            New here?{" "}
+            <button type="button" onClick={onSwitch} id="goto-register-btn">Create an account</button>
+          </div>
         </div>
-
-        <button type="submit" className="auth-btn-primary" disabled={loading || gLoading} id="signin-btn">
-          {loading && <span className="auth-spinner" />}
-          {loading ? "Signing in…" : "Sign In"}
-        </button>
-
-        <div className="auth-divider">or continue with</div>
-        <GoogleBtn onClick={handleGoogle} loading={gLoading} disabled={loading || gLoading} />
-
-        <div className="auth-switch">
-          New here?{" "}
-          <button type="button" onClick={onSwitch} id="goto-register-btn">Create an account</button>
-        </div>
-      </form>
-      <CardFooter />
-    </>
+        <CardFooter />
+      </div>
+      {/* RIGHT — brand + illustration */}
+      <IllustrationPanel />
+    </div>
   );
 }
 
@@ -253,9 +256,11 @@ function SignInPanel({ onSwitch, onForgot }) {
    REGISTER PANEL
 ═══════════════════════════════════════════════════════ */
 function RegisterPanel({ onSwitch }) {
+  const [name,     setName]     = useState("");
   const [email,    setEmail]    = useState("");
   const [password, setPassword] = useState("");
   const [confirm,  setConfirm]  = useState("");
+  const [agreed,   setAgreed]   = useState(false);
   const [loading,  setLoading]  = useState(false);
   const [gLoading, setGLoading] = useState(false);
   const [error,    setError]    = useState("");
@@ -265,6 +270,7 @@ function RegisterPanel({ onSwitch }) {
     setError("");
     if (password.length < 6) { setError("Password must be at least 6 characters."); return; }
     if (password !== confirm)  { setError("Passwords do not match."); return; }
+    if (!agreed) { setError("Please agree to the Terms & Conditions."); return; }
     setLoading(true);
     try {
       await createUserWithEmailAndPassword(auth, email.trim(), password);
@@ -286,36 +292,43 @@ function RegisterPanel({ onSwitch }) {
   }
 
   return (
-    <>
-      <BrandHeader panelTitle="Create your account" panelSub="Start your first AI-powered meeting" />
-      <form className="auth-card-body" onSubmit={handleRegister} id="register-form" noValidate>
-        <ErrorBanner msg={error} id="register-error" />
-
-        <EmailField id="reg-email" value={email} onChange={e => setEmail(e.target.value)} autoFocus />
-
-        <PasswordField id="reg-password" label="Password" value={password}
-          onChange={e => setPassword(e.target.value)}
-          placeholder="Min. 6 characters" autoComplete="new-password" />
-
-        <PasswordField id="reg-confirm" label="Confirm password" value={confirm}
-          onChange={e => setConfirm(e.target.value)}
-          placeholder="Repeat your password" autoComplete="new-password" />
-
-        <button type="submit" className="auth-btn-primary" disabled={loading || gLoading} id="register-btn">
-          {loading && <span className="auth-spinner" />}
-          {loading ? "Creating account…" : "Create Account"}
-        </button>
-
-        <div className="auth-divider">or continue with</div>
-        <GoogleBtn onClick={handleGoogle} loading={gLoading} disabled={loading || gLoading} />
-
-        <div className="auth-switch">
-          Already have an account?{" "}
-          <button type="button" onClick={onSwitch} id="goto-signin-btn">Sign in</button>
+    <div className="auth-split-layout">
+      <div className="auth-form-side">
+        <div className="auth-form-inner">
+          {/* Brand badge */}
+          <div className="auth-left-brand">
+            <div className="auth-illus-logo">🎯</div>
+            <div className="auth-illus-name">Scribe <span>GoogleAI</span></div>
+          </div>
+          <BrandHeader panelTitle="Ready to start capturing your meetings?" />
+          <ErrorBanner msg={error} id="register-error" />
+          <form onSubmit={handleRegister} id="register-form" noValidate className="auth-form">
+            <NameField id="reg-name" value={name} onChange={e => setName(e.target.value)} autoFocus />
+            <EmailField id="reg-email" value={email} onChange={e => setEmail(e.target.value)} />
+            <PasswordField id="reg-password" label="Password" value={password}
+              onChange={e => setPassword(e.target.value)}
+              placeholder="••••••••" autoComplete="new-password" />
+            <PasswordField id="reg-confirm" label="Confirm Password" value={confirm}
+              onChange={e => setConfirm(e.target.value)}
+              placeholder="••••••••" autoComplete="new-password" />
+            <label className="auth-checkbox-row">
+              <input type="checkbox" checked={agreed} onChange={e => setAgreed(e.target.checked)} id="terms-checkbox" />
+              <span>I agree to the <a href="#" className="auth-terms-link">Terms &amp; Conditions</a></span>
+            </label>
+            <button type="submit" className="auth-btn-primary" disabled={loading || gLoading} id="register-btn">
+              {loading && <span className="auth-spinner" />}
+              {loading ? "Creating account…" : "Create Account"}
+            </button>
+          </form>
+          <div className="auth-switch">
+            Already have an account?{" "}
+            <button type="button" onClick={onSwitch} id="goto-signin-btn">Sign in</button>
+          </div>
         </div>
-      </form>
-      <CardFooter />
-    </>
+        <CardFooter />
+      </div>
+      <IllustrationPanel />
+    </div>
   );
 }
 
@@ -342,36 +355,40 @@ function ForgotPanel({ onBack }) {
   }
 
   return (
-    <>
-      <BrandHeader
-        panelTitle="Reset your password"
-        panelSub={sent ? "Reset link sent — check your inbox." : "Enter your email to receive a reset link."}
-      />
-      <form className="auth-card-body" onSubmit={handleReset} id="forgot-form" noValidate>
-        <ErrorBanner msg={error} id="forgot-error" />
-
-        {sent ? (
-          <div className="auth-success" id="forgot-success">
-            <span>✅</span>
-            <span>Password reset link sent to <strong>{email}</strong>. Check your inbox and spam folder.</span>
+    <div className="auth-split-layout">
+      <div className="auth-form-side">
+        <div className="auth-form-inner">
+          {/* Brand badge */}
+          <div className="auth-left-brand">
+            <div className="auth-illus-logo">🎯</div>
+            <div className="auth-illus-name">Scribe <span>GoogleAI</span></div>
           </div>
-        ) : (
-          <EmailField id="forgot-email" value={email} onChange={e => setEmail(e.target.value)} autoFocus />
-        )}
-
-        {!sent && (
-          <button type="submit" className="auth-btn-primary" disabled={loading} id="reset-btn">
-            {loading && <span className="auth-spinner" />}
-            {loading ? "Sending link…" : "Send Reset Link"}
-          </button>
-        )}
-
-        <button type="button" className="auth-back" onClick={onBack} id="back-to-signin-btn">
-          ← Back to sign in
-        </button>
-      </form>
-      <CardFooter />
-    </>
+          <BrandHeader panelTitle={sent ? "Check your inbox!" : "Reset your password"} />
+          <ErrorBanner msg={error} id="forgot-error" />
+          <form onSubmit={handleReset} id="forgot-form" noValidate className="auth-form">
+            {sent ? (
+              <div className="auth-success" id="forgot-success">
+                <span>✅</span>
+                <span>Password reset link sent to <strong>{email}</strong>. Check your inbox and spam folder.</span>
+              </div>
+            ) : (
+              <EmailField id="forgot-email" value={email} onChange={e => setEmail(e.target.value)} autoFocus />
+            )}
+            {!sent && (
+              <button type="submit" className="auth-btn-primary" disabled={loading} id="reset-btn">
+                {loading && <span className="auth-spinner" />}
+                {loading ? "Sending link…" : "Send Reset Link"}
+              </button>
+            )}
+            <button type="button" className="auth-back" onClick={onBack} id="back-to-signin-btn">
+              ← Back to sign in
+            </button>
+          </form>
+        </div>
+        <CardFooter />
+      </div>
+      <IllustrationPanel />
+    </div>
   );
 }
 
@@ -380,14 +397,26 @@ function ForgotPanel({ onBack }) {
 ═══════════════════════════════════════════════════════ */
 export default function AuthPage() {
   const [panel, setPanel] = useState("signin");
+  const { isDark, toggle: toggleTheme } = useTheme();
   return (
     <div className="auth-root" id="auth-page">
-      {/* CSS ambient orbs */}
       <div className="auth-orb auth-orb-1" />
       <div className="auth-orb auth-orb-2" />
       <div className="auth-orb auth-orb-3" />
-      {/* Three.js cursor-reactive particles (z-index 1, pointer-events none) */}
       <ParticleBackground />
+
+      {/* ══ Floating Theme Toggle ══ */}
+      <button
+        className="btn-auth-theme-toggle"
+        onClick={toggleTheme}
+        id="auth-theme-toggle-btn"
+        title={isDark ? "Switch to Light Mode" : "Switch to Dark Mode"}
+        aria-label={isDark ? "Switch to Light Mode" : "Switch to Dark Mode"}
+      >
+        <span className="theme-toggle-icon">{isDark ? "☀️" : "🌙"}</span>
+        <span className="theme-toggle-label">{isDark ? "Light" : "Dark"}</span>
+      </button>
+
       <div className="auth-card" id="auth-card">
         {panel === "signin"   && <SignInPanel   onSwitch={() => setPanel("register")} onForgot={() => setPanel("forgot")} />}
         {panel === "register" && <RegisterPanel onSwitch={() => setPanel("signin")} />}

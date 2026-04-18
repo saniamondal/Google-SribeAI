@@ -3,22 +3,23 @@ import { onAuthStateChanged, signOut } from "firebase/auth";
 import { auth } from "./firebase";
 import AuthPage from "./AuthPage";
 import ParticleBackground from "./ParticleBackground";
+import { useTheme } from "./ThemeContext";
 import "./app.css";
 
 const STEPS = [
-  { id: "joining",      label: "Joining Meeting"  },
-  { id: "recording",    label: "Recording"        },
-  { id: "processing",   label: "Processing Audio" },
-  { id: "transcribing", label: "Transcribing"     },
-  { id: "summarizing",  label: "Analyzing"        },
+  { id: "joining", label: "Joining Meeting" },
+  { id: "recording", label: "Recording" },
+  { id: "processing", label: "Processing Audio" },
+  { id: "transcribing", label: "Transcribing" },
+  { id: "summarizing", label: "Analyzing" },
 ];
 
 const TABS = [
-  { id: "overview",   label: "Overview"     },
-  { id: "bullets",    label: "Key Points"   },
-  { id: "actions",    label: "Action Items" },
-  { id: "questions",  label: "Questions"    },
-  { id: "transcript", label: "Transcript"   },
+  { id: "overview", label: "Overview" },
+  { id: "bullets", label: "Key Points" },
+  { id: "actions", label: "Action Items" },
+  { id: "questions", label: "Questions" },
+  { id: "transcript", label: "Transcript" },
 ];
 
 function formatDate(d) {
@@ -41,28 +42,29 @@ function stripMd(text) {
 export default function App() {
   // ── Auth state (all hooks must be declared before any conditional returns) ──
   const [user, setUser] = useState(undefined); // undefined = loading, null = signed out
+  const { isDark, toggle: toggleTheme } = useTheme();
 
   // ── Dashboard state ──
-  const [link, setLink]                     = useState("");
-  const [phase, setPhase]                   = useState("idle");
-  const [currentStep, setCurrentStep]       = useState(null);
+  const [link, setLink] = useState("");
+  const [phase, setPhase] = useState("idle");
+  const [currentStep, setCurrentStep] = useState(null);
   const [statusMessages, setStatusMessages] = useState([]);
-  const [errorMsg, setErrorMsg]             = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
   const [currentMeeting, setCurrentMeeting] = useState(null);
-  const [meetingDate, setMeetingDate]       = useState(null);
-  const [activeTab, setActiveTab]           = useState("overview");
-  const [meetings, setMeetings]             = useState([]);
-  const [historyLoading, setHistLoading]    = useState(false);
-  const [selectedKey, setSelectedKey]       = useState(null);
-  const [detailLoading, setDetailLoad]      = useState(false);
-  const [showModal, setShowModal]           = useState(false);
-  const [copied, setCopied]                 = useState(false);
-  const [editingTitle, setEditingTitle]     = useState(false);
-  const [titleDraft, setTitleDraft]         = useState("");
-  const [renaming, setRenaming]             = useState(false);
+  const [meetingDate, setMeetingDate] = useState(null);
+  const [activeTab, setActiveTab] = useState("overview");
+  const [meetings, setMeetings] = useState([]);
+  const [historyLoading, setHistLoading] = useState(false);
+  const [selectedKey, setSelectedKey] = useState(null);
+  const [detailLoading, setDetailLoad] = useState(false);
+  const [showModal, setShowModal] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [renaming, setRenaming] = useState(false);
 
-  const logRef   = useRef(null);
-  const esRef    = useRef(null);
+  const logRef = useRef(null);
+  const esRef = useRef(null);
   const phaseRef = useRef("idle");
 
   useEffect(() => {
@@ -83,7 +85,7 @@ export default function App() {
       const d = await r.json();
       setMeetings(Array.isArray(d) ? d : []);
     } catch { setMeetings([]); }
-    finally   { setHistLoading(false); }
+    finally { setHistLoading(false); }
   }, [user]);
 
   useEffect(() => { if (user) fetchMeetings(); }, [fetchMeetings, user]);
@@ -101,7 +103,7 @@ export default function App() {
       phaseRef.current = "idle";
       setPhase("idle");
     } catch { }
-    finally   { setDetailLoad(false); }
+    finally { setDetailLoad(false); }
   };
 
   const renameM = async () => {
@@ -117,7 +119,7 @@ export default function App() {
       setMeetings(prev => prev.map(m =>
         m.key === selectedKey ? { ...m, title: titleDraft.trim() } : m
       ));
-    } catch {}
+    } catch { }
     setRenaming(false);
     setEditingTitle(false);
   };
@@ -137,7 +139,7 @@ export default function App() {
       currentMeeting.title && `Meeting: ${stripMd(currentMeeting.title)}`,
       currentMeeting.overview && `Overview:\n${stripMd(currentMeeting.overview)}`,
       currentMeeting.bulletPoints?.length && `Key Points:\n${currentMeeting.bulletPoints.map(p => `• ${stripMd(p)}`).join("\n")}`,
-      currentMeeting.actionItems?.length  && `Action Items:\n${currentMeeting.actionItems.map(a => `• ${stripMd(a.task)}${a.owner ? ` (${stripMd(a.owner)})` : ""}`).join("\n")}`,
+      currentMeeting.actionItems?.length && `Action Items:\n${currentMeeting.actionItems.map(a => `• ${stripMd(a.task)}${a.owner ? ` (${stripMd(a.owner)})` : ""}`).join("\n")}`,
     ].filter(Boolean).join("\n\n");
     navigator.clipboard.writeText(parts);
     setCopied(true);
@@ -209,10 +211,10 @@ export default function App() {
     setEditingTitle(false);
   };
 
-  const stepIndex   = STEPS.findIndex(s => s.id === currentStep);
+  const stepIndex = STEPS.findIndex(s => s.id === currentStep);
   const showSummary = phase === "idle" && currentMeeting && !detailLoading;
-  const showHero    = phase === "idle" && !currentMeeting && !detailLoading;
-  const showHome    = showSummary || phase === "running" || phase === "error";
+  const showHero = phase === "idle" && !currentMeeting && !detailLoading;
+  const showHome = showSummary || phase === "running" || phase === "error";
 
   const handleSignOut = () => signOut(auth);
 
@@ -242,10 +244,22 @@ export default function App() {
       {/* ══ Home Pill (top-left, always visible) ══ */}
       <button className="btn-float-home" onClick={goHome} id="home-fab">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
-          <polyline points="9,22 9,12 15,12 15,22"/>
+          <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+          <polyline points="9,22 9,12 15,12 15,22" />
         </svg>
         Home
+      </button>
+
+      {/* ══ Theme Toggle (fixed pill) ══ */}
+      <button
+        className="btn-theme-toggle"
+        onClick={toggleTheme}
+        id="theme-toggle-btn"
+        title={isDark ? "Switch to Light Mode" : "Switch to Dark Mode"}
+        aria-label={isDark ? "Switch to Light Mode" : "Switch to Dark Mode"}
+      >
+        <span className="theme-toggle-icon">{isDark ? "☀️" : "🌙"}</span>
+        <span className="theme-toggle-label">{isDark ? "Light" : "Dark"}</span>
       </button>
 
       {/* ══ User Avatar Pill (top-right, always visible) ══ */}
@@ -261,9 +275,9 @@ export default function App() {
         </span>
         <button className="user-signout" onClick={handleSignOut} id="signout-btn" title="Sign out">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-            <polyline points="16,17 21,12 16,7"/>
-            <line x1="21" y1="12" x2="9" y2="12"/>
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+            <polyline points="16,17 21,12 16,7" />
+            <line x1="21" y1="12" x2="9" y2="12" />
           </svg>
         </button>
       </div>
@@ -340,19 +354,19 @@ export default function App() {
 
               <div className="pipeline">
                 {STEPS.map((step, i) => {
-                  const done   = stepIndex > i;
+                  const done = stepIndex > i;
                   const active = stepIndex === i;
                   return (
                     <div key={step.id} className={`pipe-row ${done ? "is-done" : ""} ${active ? "is-active" : ""}`}>
                       {i < STEPS.length - 1 && <div className="pipe-track" />}
                       <div className="pipe-circle">
                         {done ? <span className="pipe-check">✓</span>
-                               : active ? <span className="pipe-pulse" /> : null}
+                          : active ? <span className="pipe-pulse" /> : null}
                       </div>
                       <div className="pipe-body">
                         <span className="pipe-label">{step.label}</span>
                         {active && <span className="pipe-tag">In progress</span>}
-                        {done   && <span className="pipe-tag is-done-tag">Done</span>}
+                        {done && <span className="pipe-tag is-done-tag">Done</span>}
                       </div>
                     </div>
                   );
@@ -430,8 +444,8 @@ export default function App() {
                             id="title-edit-btn"
                           >
                             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
                             </svg>
                           </button>
                         </>
@@ -477,12 +491,12 @@ export default function App() {
 
                 {activeTab === "overview" && (
                   <div className="pane fade-in">
-                    {currentMeeting.overview ? (
+                    {currentMeeting.overview && typeof currentMeeting.overview === "string" ? (
                       <div className="overview-box">
-                        <div className="overview-label">Summary</div>
+                        <div className="overview-label">📋 Summary</div>
                         <p className="overview-text">{stripMd(currentMeeting.overview)}</p>
                       </div>
-                    ) : <EmptyPane msg="No overview available." />}
+                    ) : <EmptyPane msg="No summary available." />}
                   </div>
                 )}
 
@@ -511,7 +525,7 @@ export default function App() {
                             <div className="action-body">
                               <p className="action-task">{stripMd(a.task)}</p>
                               <div className="action-meta">
-                                {a.owner    && <span className="tag tag--owner">👤 {stripMd(a.owner)}</span>}
+                                {a.owner && <span className="tag tag--owner">👤 {stripMd(a.owner)}</span>}
                                 {a.deadline && <span className="tag tag--date">📅 {stripMd(a.deadline)}</span>}
                               </div>
                             </div>

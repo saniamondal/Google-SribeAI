@@ -323,6 +323,7 @@ app.get("/start", async (req, res) => {
 
   let recordingUrl = null;
   let lastStatus = null;
+  let lastSentStep = null;
   let waitingRoomCount = 0;
 
   for (let i = 0; i < 120; i++) {
@@ -340,13 +341,14 @@ app.get("/start", async (req, res) => {
 
     const recallStatus = extractRecallStatus(data);
 
+    // Only send a status update when the status actually changes
     if (recallStatus !== lastStatus) {
       lastStatus = recallStatus;
+      lastSentStep = recallStatus;
       console.log(`[${i + 1}] Status → ${recallStatus}`);
+      const { step, msg } = mapStatus(recallStatus);
+      send("status", { step, message: msg });
     }
-
-    const { step, msg } = mapStatus(recallStatus);
-    send("status", { step, message: msg });
 
     // Also check top-level fatal/error flags Recall sometimes puts outside status_changes
     if (data?.error || data?.fatal) {
