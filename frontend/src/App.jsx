@@ -39,6 +39,30 @@ function stripMd(text) {
     .replace(/^[-*+]\s+/gm, "").replace(/^\d+\.\s+/gm, "").trim();
 }
 
+// If a meeting's overview field accidentally contains the full JSON blob,
+// re-parse it and extract the real fields.
+function normalizeMeeting(data) {
+  if (!data) return data;
+  const ov = data.overview;
+  if (ov && typeof ov === "string" && ov.trimStart().startsWith("{")) {
+    try {
+      const inner = JSON.parse(ov);
+      if (inner && typeof inner === "object" && inner.overview) {
+        return {
+          ...data,
+          title: inner.title || data.title,
+          participants: inner.participants || data.participants,
+          overview: inner.overview,
+          bulletPoints: inner.bulletPoints || data.bulletPoints,
+          actionItems: inner.actionItems || data.actionItems,
+          questions: inner.questions || data.questions,
+        };
+      }
+    } catch { /* not JSON, use as-is */ }
+  }
+  return data;
+}
+
 export default function App() {
   // ── Auth state (all hooks must be declared before any conditional returns) ──
   const [user, setUser] = useState(undefined); // undefined = loading, null = signed out
@@ -62,6 +86,8 @@ export default function App() {
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [renaming, setRenaming] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null); // meeting to delete
+  const [recordingWarning, setRecordingWarning] = useState(false);
 
   const logRef = useRef(null);
   const esRef = useRef(null);
@@ -81,7 +107,7 @@ export default function App() {
     setHistLoading(true);
     try {
       const uid = user.uid || "";
-      const r = await fetch(`https://google-sribeai.onrender.com/meetings?uid=${encodeURIComponent(uid)}`);
+      const r = await fetch(`${import.meta.env.VITE_API_URL}/meetings?uid=${encodeURIComponent(uid)}`);
       const d = await r.json();
       setMeetings(Array.isArray(d) ? d : []);
     } catch { setMeetings([]); }
@@ -91,14 +117,20 @@ export default function App() {
   useEffect(() => { if (user) fetchMeetings(); }, [fetchMeetings, user]);
 
   const openMeeting = async (m) => {
+    // Block navigation while recording is in progress
+    if (phase === "running") {
+      setRecordingWarning(true);
+      setTimeout(() => setRecordingWarning(false), 2500);
+      return;
+    }
     setSelectedKey(m.key);
     setDetailLoad(true);
     setActiveTab("overview");
     setEditingTitle(false);
     try {
-      const r = await fetch(`https://google-sribeai.onrender.com/meeting?key=${encodeURIComponent(m.key)}`);
+      const r = await fetch(`${import.meta.env.VITE_API_URL}/meeting?key=${encodeURIComponent(m.key)}`);
       const d = await r.json();
-      setCurrentMeeting(d);
+      setCurrentMeeting(normalizeMeeting(d));
       setMeetingDate(m.date);
       phaseRef.current = "idle";
       setPhase("idle");
@@ -106,11 +138,31 @@ export default function App() {
     finally { setDetailLoad(false); }
   };
 
+  const confirmDeleteMeeting = (m, e) => {
+    e.stopPropagation(); // prevent opening the meeting
+    setDeleteTarget(m);
+  };
+
+  const handleDeleteMeeting = () => {
+    if (!deleteTarget) return;
+    // Remove from local state only (not from AWS)
+    setMeetings(prev => prev.filter(m => m.key !== deleteTarget.key));
+    // If the deleted meeting is currently selected, clear the main panel
+    if (selectedKey === deleteTarget.key) {
+      setCurrentMeeting(null);
+      setMeetingDate(null);
+      setSelectedKey(null);
+      setActiveTab("overview");
+      setEditingTitle(false);
+    }
+    setDeleteTarget(null);
+  };
+
   const renameM = async () => {
     if (!titleDraft.trim() || !selectedKey || renaming) return;
     setRenaming(true);
     try {
-      await fetch("https://google-sribeai.onrender.com/meeting", {
+      await fetch(`${import.meta.env.VITE_API_URL}/meeting`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ key: selectedKey, title: titleDraft.trim() }),
@@ -160,7 +212,7 @@ export default function App() {
     if (esRef.current) esRef.current.close();
 
     const uid = user?.uid || "";
-    const es = new EventSource(`https://google-sribeai.onrender.com/start?meetLink=${encodeURIComponent(link.trim())}&uid=${encodeURIComponent(uid)}`);
+    const es = new EventSource(`${import.meta.env.VITE_API_URL}/start?meetLink=${encodeURIComponent(link.trim())}&uid=${encodeURIComponent(uid)}`);
     esRef.current = es;
 
     es.addEventListener("status", (e) => {
@@ -176,7 +228,7 @@ export default function App() {
 
     es.addEventListener("done", (e) => {
       const d = JSON.parse(e.data);
-      setCurrentMeeting(d.meetingData);
+      setCurrentMeeting(normalizeMeeting(d.meetingData));
       setMeetingDate(new Date().toISOString());
       if (d.s3Key) setSelectedKey(d.s3Key);
       phaseRef.current = "idle";
@@ -605,11 +657,13 @@ export default function App() {
               </div>
             )}
             {meetings.map((m, idx) => (
-              <button
+              <div
                 key={m.key}
                 className={`sb-item ${selectedKey === m.key ? "sb-item--on" : ""}`}
                 onClick={() => openMeeting(m)}
                 id={`meeting-${idx}`}
+                role="button"
+                tabIndex={0}
               >
                 <div className="sb-item-avatar">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
@@ -624,8 +678,21 @@ export default function App() {
                   <div className="sb-item-date">{formatDate(m.date)}</div>
                   <div className="sb-item-time">{formatTime(m.date)}</div>
                 </div>
+                <button
+                  className="sb-item-delete"
+                  onClick={(e) => confirmDeleteMeeting(m, e)}
+                  title="Delete meeting"
+                  id={`delete-meeting-${idx}`}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="3,6 5,6 21,6" />
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    <line x1="10" y1="11" x2="10" y2="17" />
+                    <line x1="14" y1="11" x2="14" y2="17" />
+                  </svg>
+                </button>
                 {selectedKey === m.key && <div className="sb-item-dot" />}
-              </button>
+              </div>
             ))}
           </div>
         </aside>
@@ -678,11 +745,46 @@ export default function App() {
         </div>
       )}
 
+      {/* ══ Delete Confirmation Modal ══ */}
+      {deleteTarget && (
+        <div className="overlay" onClick={() => setDeleteTarget(null)} id="delete-modal-overlay">
+          <div className="modal delete-modal" onClick={e => e.stopPropagation()} id="delete-modal">
+            <div className="delete-modal-icon">🗑️</div>
+            <h2 className="delete-modal-title">Delete Meeting?</h2>
+            <p className="delete-modal-sub">
+              Are you sure you want to permanently delete<br />
+              <strong>"{deleteTarget.title || 'Untitled Meeting'}"</strong>?
+            </p>
+            {/* <p className="delete-modal-hint">This will remove it from your list. The data on the cloud will not be affected.</p> */}
+            <div className="delete-modal-actions">
+              <button className="btn-delete-cancel" onClick={() => setDeleteTarget(null)} id="delete-cancel-btn">
+                Cancel
+              </button>
+              <button className="btn-delete-confirm" onClick={handleDeleteMeeting} id="delete-confirm-btn">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="3,6 5,6 21,6" />
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                </svg>
+                Delete Permanently
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ══ Toast ══ */}
       {copied && (
         <div className="toast" id="copy-toast">
           <span className="toast-icon">✓</span>
           Copied to clipboard
+        </div>
+      )}
+
+      {/* ══ Recording Warning Toast ══ */}
+      {recordingWarning && (
+        <div className="toast toast-warning" id="recording-warning-toast">
+          <span className="toast-icon">⚠️</span>
+          Recording in progress — please wait or cancel first
         </div>
       )}
 

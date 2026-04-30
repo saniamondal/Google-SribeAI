@@ -6,6 +6,8 @@ const AWS = require("aws-sdk");
 const Groq = require("groq-sdk");
 const fs = require("fs");
 const path = require("path");
+const { execSync } = require("child_process");
+const ffmpegPath = require("ffmpeg-static");
 
 // Groq client — used for Whisper transcription
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -93,17 +95,21 @@ async function getBot(botId) {
   return res.data;
 }
 
-// ── WHISPER via Groq ─────────────────────────────────────
-async function transcribe(audioUrl) {
+// ── WHISPER via Groq (with chunking for large files) ─────
+const WHISPER_MAX_BYTES = 24 * 1024 * 1024; // 24 MB safety margin (Groq limit: 25 MB)
+const CHUNK_DURATION_SECS = 600;             // 10 minutes per audio chunk
+
+async function transcribe(audioUrl, onProgress) {
   console.log("Downloading audio from:", audioUrl);
 
-  const isPresignedS3 = audioUrl.includes("AWSAccessKeyId") || audioUrl.includes("X-Amz-Signature");
+  const isPresignedS3 =
+    audioUrl.includes("AWSAccessKeyId") || audioUrl.includes("X-Amz-Signature");
   const downloadHeaders = isPresignedS3 ? {} : RECALL_HEADERS;
 
   const audioRes = await axios.get(audioUrl, {
     responseType: "arraybuffer",
     headers: downloadHeaders,
-    timeout: 300000,
+    timeout: 600000,          // 10 min timeout for large downloads
     maxContentLength: Infinity,
     maxBodyLength: Infinity,
   });
@@ -113,34 +119,107 @@ async function transcribe(audioUrl) {
   console.log(`Downloaded: ${sizeMB} MB`);
 
   if (audioBuffer.length < 1000) {
-    throw new Error("Download returned non-audio data: " + audioBuffer.toString("utf8").slice(0, 200));
+    throw new Error(
+      "Download returned non-audio data: " +
+        audioBuffer.toString("utf8").slice(0, 200)
+    );
   }
 
-  const tmpPath = path.resolve("./recording_tmp.mp4");
+  const tmpDir = path.resolve("./tmp_audio_chunks");
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+
+  const tmpPath = path.join(tmpDir, "recording_full.mp4");
   fs.writeFileSync(tmpPath, audioBuffer);
 
   try {
-    console.log("Sending to Groq Whisper...");
-    const transcription = await groq.audio.transcriptions.create({
-      file: fs.createReadStream(tmpPath),
-      model: "whisper-large-v3",
-      response_format: "text",
-      language: "en",
-    });
+    // ── Small file → single Whisper call ──────────────────
+    if (audioBuffer.length <= WHISPER_MAX_BYTES) {
+      console.log("File under 24 MB — single Whisper call…");
+      if (onProgress) onProgress("Transcribing audio…");
+      const transcription = await groq.audio.transcriptions.create({
+        file: fs.createReadStream(tmpPath),
+        model: "whisper-large-v3",
+        response_format: "text",
+        language: "en",
+      });
+      const text =
+        typeof transcription === "string"
+          ? transcription
+          : transcription?.text || "";
+      console.log(`Transcript done — ${text.length} characters`);
+      return text;
+    }
 
-    const text = typeof transcription === "string"
-      ? transcription
-      : transcription?.text || "";
+    // ── Large file → split with ffmpeg, transcribe each chunk ─
+    console.log(
+      `File is ${sizeMB} MB (exceeds 24 MB) — splitting into ${CHUNK_DURATION_SECS}s chunks…`
+    );
+    if (onProgress) onProgress(`Audio is ${sizeMB} MB — splitting into chunks…`);
 
-    console.log(`Transcript done — ${text.length} characters`);
-    return text;
+    const chunkPattern = path.join(tmpDir, "chunk_%03d.mp4");
+    execSync(
+      `"${ffmpegPath}" -i "${tmpPath}" -f segment -segment_time ${CHUNK_DURATION_SECS} -c copy -reset_timestamps 1 -v error "${chunkPattern}"`,
+      { stdio: "pipe", timeout: 120000 }
+    );
+
+    const chunkFiles = fs
+      .readdirSync(tmpDir)
+      .filter((f) => f.startsWith("chunk_") && f.endsWith(".mp4"))
+      .sort();
+
+    console.log(`Created ${chunkFiles.length} audio chunks`);
+
+    const transcripts = [];
+    for (let i = 0; i < chunkFiles.length; i++) {
+      const chunkPath = path.join(tmpDir, chunkFiles[i]);
+      const chunkSizeMB = (fs.statSync(chunkPath).size / 1024 / 1024).toFixed(2);
+      console.log(
+        `Transcribing chunk ${i + 1}/${chunkFiles.length} (${chunkSizeMB} MB)…`
+      );
+      if (onProgress)
+        onProgress(
+          `Transcribing audio chunk ${i + 1} of ${chunkFiles.length} (${chunkSizeMB} MB)…`
+        );
+
+      const transcription = await groq.audio.transcriptions.create({
+        file: fs.createReadStream(chunkPath),
+        model: "whisper-large-v3",
+        response_format: "text",
+        language: "en",
+      });
+
+      const text =
+        typeof transcription === "string"
+          ? transcription
+          : transcription?.text || "";
+      transcripts.push(text);
+      console.log(`  ✓ chunk ${i + 1} — ${text.length} chars`);
+    }
+
+    const fullTranscript = transcripts.join("\n\n");
+    console.log(
+      `Full transcript assembled — ${fullTranscript.length} chars from ${chunkFiles.length} chunks`
+    );
+    return fullTranscript;
   } finally {
-    if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-    console.log("Temp file deleted.");
+    // Clean up temp directory
+    try {
+      for (const f of fs.readdirSync(tmpDir)) {
+        fs.unlinkSync(path.join(tmpDir, f));
+      }
+      fs.rmdirSync(tmpDir);
+      console.log("Temp audio files cleaned up.");
+    } catch (e) {
+      console.warn("Cleanup warning:", e.message);
+    }
   }
 }
 
 // ── LLM via Groq — LLaMA 3.3 70B ───────────────────────
+// llama-3.3-70b-versatile on Groq has a 128 K-token context window.
+// ~4 chars ≈ 1 token → allow up to ~120 K chars before chunking.
+const MAX_DIRECT_CHARS  = 120000;
+const SUMMARY_CHUNK_CHARS = 60000; // ~15 K tokens per chunk
 
 // Extract the outermost JSON object from a string that may have preamble/suffix text
 function extractJSON(raw) {
@@ -150,56 +229,126 @@ function extractJSON(raw) {
   return raw.slice(start, end + 1);
 }
 
-async function summarize(text) {
-  const truncated = text.length > 12000
-    ? text.slice(0, 12000) + "\n\n[transcript truncated for length]"
-    : text;
+/**
+ * Generate a partial plain-text summary for one chunk of a long transcript.
+ */
+async function summarizeChunk(chunkText, idx, total) {
+  const completion = await groq.chat.completions.create({
+    model: "llama-3.3-70b-versatile",
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are an expert meeting analyst and note-taker. Your job is to produce a thorough, " +
+          "faithful summary of the meeting transcript chunk provided. Capture EVERY meaningful topic, " +
+          "decision, action item, question, and insight. Introduce each speaker by full name on first " +
+          "mention, then use pronouns naturally. Reproduce all names, institutions, numbers, dates, " +
+          "and statistics exactly as spoken. Correct filler words (um, uh, repeated words) silently " +
+          "without changing meaning. Do NOT invent or infer anything not clearly stated. " +
+          "Output plain text only — no JSON, no markdown fences, no bullet points. Write in flowing prose paragraphs.",
+      },
+      {
+        role: "user",
+        content:
+          `This is section ${idx} of ${total} of a longer meeting transcript. ` +
+          `Summarize it thoroughly. Cover ALL topics discussed, decisions made, tasks assigned, ` +
+          `questions raised, and notable insights. Be comprehensive — do not omit details.\n\n${chunkText}`,
+      },
+    ],
+    max_tokens: 8192,
+    temperature: 0.1,
+  });
 
-  console.log("Sending to Groq LLaMA 3.3 70B for summarization...");
+  return completion?.choices?.[0]?.message?.content || "";
+}
+
+/**
+ * Generate the final structured JSON summary.
+ * @param {string}  text          – full transcript OR merged partial summaries
+ * @param {boolean} isFromChunks  – true when input is merged partial summaries
+ */
+async function generateFinalSummary(text, isFromChunks = false) {
+  const systemPrompt = isFromChunks
+    ? "You are an expert meeting summarizer and analyst. You are given partial summaries of " +
+      "different sections of a long meeting. Merge them into a single cohesive, comprehensive analysis. " +
+      "Write in clear, professional English. Reproduce all names, institutions, numbers, and statistics exactly. " +
+      "Do NOT invent or infer anything not present in the summaries. " +
+      "Respond with ONLY a single valid JSON object — no markdown, no code fences, no explanation before or after."
+    : "You are an expert meeting summarizer and analyst. " +
+      "Your job is to produce a thorough, faithful, and well-structured analysis of the meeting transcript. " +
+      "Write in clear, professional English. Introduce each speaker by full name on first mention, then use pronouns naturally. " +
+      "Reproduce all names, institutions, numbers, dates, and statistics exactly as spoken. " +
+      "Correct filler words (um, uh, repeated words) silently without changing meaning. " +
+      "Do NOT invent or infer anything not clearly stated in the transcript. " +
+      "Respond with ONLY a single valid JSON object — no markdown, no code fences, no explanation before or after.";
+
+  const userLabel = isFromChunks
+    ? "Merge these partial meeting summaries into a single JSON analysis"
+    : "Analyze the meeting transcript below and return ONLY a raw JSON object";
 
   let completion;
   try {
     completion = await groq.chat.completions.create({
       model: "llama-3.3-70b-versatile",
       messages: [
-        {
-          role: "system",
-          content:
-            "You are an expert meeting analyst. " +
-            "Respond with ONLY a single valid JSON object — no markdown, no code fences, no explanation before or after.",
-        },
+        { role: "system", content: systemPrompt },
         {
           role: "user",
           content:
-`Analyze the meeting transcript below and return ONLY a raw JSON object with this EXACT structure. Do NOT wrap it in markdown or add any text outside the JSON.
+`${userLabel} with this EXACT structure. Do NOT wrap it in markdown or add any text outside the JSON.
 
 {
-  "title": "Short descriptive meeting title (5-7 words)",
-  "participants": ["Name1", "Name2"],
-  "overview": "2-3 sentence professional summary of the meeting.",
+  "title": "Concise descriptive meeting title (3-7 words, e.g. 'Q1 Budget Review Discussion' or 'Introduction — John Smith')",
+  "participants": ["Full Name 1", "Full Name 2"],
+  "overview": "A comprehensive, flowing summary of the entire meeting written as 2-3 rich paragraphs. Each paragraph should be 4-6 sentences minimum depending on the transcript length. Cover all major themes, context, decisions, outcomes, and the overall arc of the discussion. This must read like a professional meeting brief that someone who missed the meeting can rely on to be fully informed.",
   "bulletPoints": [
-    "Key discussion point 1",
-    "Key discussion point 2",
-    "Key discussion point 3",
-    "Key discussion point 4"
+    "Key discussion point written as a full 1-3 sentence explanation with context, not a short fragment. Attribute to the speaker who raised it.",
+    "Another important topic covered in the meeting, explained thoroughly with specifics mentioned during the discussion."
   ],
   "actionItems": [
-    { "task": "Task description", "owner": "Person or Team", "deadline": "deadline or TBD" }
+    { "task": "Specific, concrete follow-up task described clearly", "owner": "Person or Team responsible", "deadline": "Mentioned deadline or TBD" }
   ],
   "questions": [
-    "Important question or notable insight raised in the meeting"
+    "Important question, concern, or unresolved issue raised during the meeting, stated clearly with context"
   ]
 }
 
-Rules:
-- participants: only real names spoken; [] if none found
-- bulletPoints: 4-8 most important points; NEVER leave empty if transcript has content
-- actionItems: concrete follow-up tasks; [] only if genuinely none mentioned
-- questions: 3-5 key questions or insights; [] only if none
-- All string values must be plain text — no markdown, no bullet symbols
+QUALITY RULES — follow these strictly:
 
-Transcript:
-${truncated}`,
+OVERVIEW section:
+- Write exactly 100-150 words depending on the transcript length that is, if transcript is long then summary should also be.This overview must contain all the key discussion points and insights that were discussed in the meeting. (strictly enforced, count before submitting)
+- 1-3 dense paragraphs (3-5 sentences per paragraph), no bullet points
+- You must read the full transcript before writing this — do not skim
+- Pack in everything: who attended, all topics discussed, every decision made, and the outcome
+- Every sentence must carry new information — no filler, no repetition
+- Introduce speakers by full name on first mention
+- Think of it as a telegram — maximum information, minimum words
+
+KEY POINTS (bulletPoints):
+- Extract ALL significant discussion topics — aim for 3-8 points depending on the transcript length for a normal meeting
+- Each point must be 1-3 full sentences explaining the topic with specifics (names, numbers, dates mentioned)
+- Attribute each point to the speaker(s) who raised or discussed it
+- NEVER leave this empty if the transcript has any substantive content
+- Do NOT write short fragments like "Budget discussed" — write "Sarah presented the Q1 budget figures showing a 12% increase over projections, and the team discussed reallocation of funds to the marketing department."
+
+ACTION ITEMS (actionItems):
+- Include every concrete task, follow-up, or commitment mentioned
+- Be specific about what needs to be done, not vague
+- [] only if genuinely no tasks were mentioned
+
+QUESTIONS (questions):
+- Capture 3-8 important questions, concerns, open issues, or unresolved topics raised
+- Include the context of why the question matters
+- [] only if genuinely none were raised
+
+GENERAL RULES:
+- participants: only include real names explicitly spoken in the ${isFromChunks ? "summaries" : "transcript"}; [] if none identifiable
+- All string values must be plain text — absolutely no markdown, no bullet symbols, no asterisks, no formatting
+- Reproduce names, institutions, numbers, and statistics exactly as stated — do not paraphrase proper nouns
+- Be thorough and detailed — a longer, richer summary is always preferred over a brief one
+
+${isFromChunks ? "Partial summaries" : "Transcript"}:
+${text}`,
         },
       ],
       max_tokens: 4096,
@@ -241,7 +390,6 @@ ${truncated}`,
   try {
     const parsed = JSON.parse(jsonStr);
     console.log("✅ JSON parsed successfully — keys:", Object.keys(parsed));
-    // Ensure all expected arrays exist
     parsed.bulletPoints = parsed.bulletPoints || [];
     parsed.actionItems  = parsed.actionItems  || [];
     parsed.questions    = parsed.questions    || [];
@@ -258,6 +406,45 @@ ${truncated}`,
       questions:    [],
     };
   }
+}
+
+async function summarize(text, onProgress) {
+  // Short enough → send the full transcript directly (well within 128K context)
+  if (text.length <= MAX_DIRECT_CHARS) {
+    console.log(
+      `Transcript (${text.length} chars) fits in context — direct summarization…`
+    );
+    if (onProgress) onProgress("Generating meeting summary…");
+    return await generateFinalSummary(text, false);
+  }
+
+  // Very long → chunk, summarize each section, then merge
+  console.log(
+    `Transcript (${text.length} chars) exceeds ${MAX_DIRECT_CHARS} — chunked summarization…`
+  );
+
+  const chunks = [];
+  for (let i = 0; i < text.length; i += SUMMARY_CHUNK_CHARS) {
+    chunks.push(text.slice(i, Math.min(i + SUMMARY_CHUNK_CHARS, text.length)));
+  }
+  console.log(`Split transcript into ${chunks.length} chunks for summarization`);
+
+  const partialSummaries = [];
+  for (let i = 0; i < chunks.length; i++) {
+    console.log(`Summarizing chunk ${i + 1}/${chunks.length}…`);
+    if (onProgress)
+      onProgress(`Analyzing section ${i + 1} of ${chunks.length}…`);
+    const partial = await summarizeChunk(chunks[i], i + 1, chunks.length);
+    partialSummaries.push(partial);
+    console.log(`  ✓ chunk ${i + 1} summary — ${partial.length} chars`);
+  }
+
+  const merged = partialSummaries.join("\n\n--- Next section ---\n\n");
+  console.log(
+    `Merging ${partialSummaries.length} partial summaries (${merged.length} chars)…`
+  );
+  if (onProgress) onProgress("Merging all sections into final summary…");
+  return await generateFinalSummary(merged, true);
 }
 
 // ── S3 ───────────────────────────────────────────────────
@@ -304,7 +491,8 @@ app.get("/start", async (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
-
+  const keepAlive = setInterval(() => { try { res.write(": ping\n\n"); } catch(e) { clearInterval(keepAlive); } }, 20000);
+  req.on("close", () => clearInterval(keepAlive));
   const send = (event, data) => sseWrite(res, event, data);
 
   send("status", { step: "joining", message: "🤖 Creating Recall.ai bot…" });
@@ -318,6 +506,7 @@ app.get("/start", async (req, res) => {
   } catch (err) {
     const errData = err.response?.data;
     send("error", { message: `Failed to create bot: ${JSON.stringify(errData) || err.message}` });
+    clearInterval(keepAlive);
     return res.end();
   }
 
@@ -326,7 +515,7 @@ app.get("/start", async (req, res) => {
   let lastSentStep = null;
   let waitingRoomCount = 0;
 
-  for (let i = 0; i < 120; i++) {
+  for (let i = 0; i < 360; i++) {
     await new Promise((r) => setTimeout(r, 5000));
 
     let data;
@@ -355,6 +544,7 @@ app.get("/start", async (req, res) => {
       const errMsg = data.error?.message || data.fatal?.message || JSON.stringify(data.error || data.fatal);
       send("error", { message: `Bot encountered a fatal error: ${errMsg}` });
       activeBots.delete(meetLink);
+      clearInterval(keepAlive);
       return res.end();
     }
 
@@ -363,6 +553,7 @@ app.get("/start", async (req, res) => {
       if (waitingRoomCount >= 9) {
         send("error", { message: "Bot was not admitted from the waiting room after 45 seconds." });
         activeBots.delete(meetLink);
+        clearInterval(keepAlive);
         return res.end();
       }
     } else {
@@ -372,43 +563,54 @@ app.get("/start", async (req, res) => {
     if (TERMINAL_FAIL.has(recallStatus)) {
       send("error", { message: `Bot failed: ${recallStatus}. ${latest?.message || ""}` });
       activeBots.delete(meetLink);
+      clearInterval(keepAlive);
       return res.end();
     }
 
-    if (TERMINAL_OK.has(recallStatus)) {
-      send("status", { step: "processing", message: "🎙 Meeting ended — waiting 15s for recording…" });
-      await new Promise((r) => setTimeout(r, 15000));
-      const freshData = await getBot(botId);
-      const recordings = freshData?.recordings || [];
-      if (recordings.length > 0) {
-        recordingUrl =
-          recordings[0].media_shortcuts?.audio_mixed?.data?.download_url ||
-          recordings[0].media_shortcuts?.video_mixed?.data?.download_url ||
-          recordings[0].download_url ||
-          recordings[0].url;
-      }
-      break;
-    }
-
-    if (typeof data?.status === "string" && (data.status === "call_ended" || data.status === "done")) {
-      send("status", { step: "processing", message: `📵 Call ended. Waiting for recording…` });
-      await new Promise((r) => setTimeout(r, 15000));
-      const freshData = await getBot(botId);
-      const recordings = freshData?.recordings || [];
-      if (recordings.length > 0) {
-        recordingUrl =
-          recordings[0].media_shortcuts?.audio_mixed?.data?.download_url ||
-          recordings[0].media_shortcuts?.video_mixed?.data?.download_url ||
-          recordings[0].download_url ||
-          recordings[0].url;
+    if (TERMINAL_OK.has(recallStatus) ||
+        (typeof data?.status === "string" && (data.status === "call_ended" || data.status === "done"))) {
+      // Meeting ended — try up to 3 times to fetch the recording URL
+      const MAX_RECORDING_RETRIES = 3;
+      const RETRY_DELAY_MS = 30000; // 30 seconds between attempts
+      for (let attempt = 1; attempt <= MAX_RECORDING_RETRIES; attempt++) {
+        send("status", {
+          step: "processing",
+          message: `🎙 Meeting ended — fetching recording (attempt ${attempt}/${MAX_RECORDING_RETRIES}), waiting 30s…`,
+        });
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        try {
+          const freshData = await getBot(botId);
+          const recordings = freshData?.recordings || [];
+          if (recordings.length > 0) {
+            recordingUrl =
+              recordings[0].media_shortcuts?.audio_mixed?.data?.download_url ||
+              recordings[0].media_shortcuts?.video_mixed?.data?.download_url ||
+              recordings[0].download_url ||
+              recordings[0].url;
+          }
+        } catch (e) {
+          console.warn(`Recording fetch attempt ${attempt} failed:`, e.message);
+        }
+        if (recordingUrl) {
+          send("status", { step: "processing", message: `✅ Recording found on attempt ${attempt}!` });
+          break;
+        }
+        if (attempt < MAX_RECORDING_RETRIES) {
+          send("status", {
+            step: "processing",
+            message: `⚠️ No recording yet — will retry (${MAX_RECORDING_RETRIES - attempt} attempt(s) left)…`,
+          });
+        }
       }
       break;
     }
   }
 
+  // If all retries failed, give a clear error
   if (!recordingUrl) {
-    send("error", { message: "No recording URL found. Check your Recall.ai dashboard." });
+    send("error", { message: "No recording URL found after 3 attempts. The recording may still be processing — check your Recall.ai dashboard." });
     activeBots.delete(meetLink);
+    clearInterval(keepAlive);
     return res.end();
   }
 
@@ -416,12 +618,15 @@ app.get("/start", async (req, res) => {
   send("status", { step: "transcribing", message: "🔊 Audio found. Sending to Whisper…" });
   let transcript;
   try {
-    transcript = await transcribe(recordingUrl);
+    transcript = await transcribe(recordingUrl, (msg) =>
+      send("status", { step: "transcribing", message: "🔊 " + msg })
+    );
     send("status", { step: "transcribing", message: `✅ Transcript ready (${transcript.length} chars)…` });
     send("transcript", { text: transcript });
   } catch (err) {
     send("error", { message: `Whisper transcription failed: ${err.message}` });
     activeBots.delete(meetLink);
+    clearInterval(keepAlive);
     return res.end();
   }
 
@@ -429,11 +634,14 @@ app.get("/start", async (req, res) => {
   send("status", { step: "summarizing", message: "✨ Analyzing and structuring meeting data…" });
   let meetingData;
   try {
-    meetingData = await summarize(transcript);
+    meetingData = await summarize(transcript, (msg) =>
+      send("status", { step: "summarizing", message: "✨ " + msg })
+    );
   } catch (err) {
     console.error("Summarization error:", err.message);
     send("error", { message: `Summarization failed: ${err.message}` });
     activeBots.delete(meetLink);
+    clearInterval(keepAlive);
     return res.end();
   }
 
@@ -442,6 +650,7 @@ app.get("/start", async (req, res) => {
   const s3Key = await uploadToS3(fullData, uid);
 
   activeBots.delete(meetLink);
+  clearInterval(keepAlive);
   send("done", { meetingData: fullData, s3Key });
   res.end();
 });
